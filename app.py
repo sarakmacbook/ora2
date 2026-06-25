@@ -6,17 +6,17 @@ import oci
 
 app = Flask(__name__)
 
-# Global thread-safe terminal logs container
+# Persistent rolling history storage setup
 global_logs = []
 logs_lock = threading.Lock()
 
 def add_log(message):
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
     formatted_line = f"[{timestamp}] {message}"
-    print(formatted_line) # Still prints out to standard container output
+    print(formatted_line)
     with logs_lock:
         global_logs.append(formatted_line)
-        if len(global_logs) > 500: # Maintain memory safety limits
+        if len(global_logs) > 200: # Retain a clean, secure historical size limit
             global_logs.pop(0)
 
 def run_automated_creation(config, account_config, compute_client, network_client, identity_client):
@@ -37,19 +37,33 @@ def run_automated_creation(config, account_config, compute_client, network_clien
         subnet_id = subnets[0].id
 
         images = compute_client.list_images(compartment_id=config["tenancy"], operating_system="Ubuntu").data
+        images.sort(key=lambda img: img.time_created if img.time_created else "", reverse=True)
+        
         image_id = ""
         is_arm = account_config['shape'] == "VM.Standard.A1.Flex"
         
         for img in images:
+            if img.lifecycle_state != "AVAILABLE":
+                continue
+                
             if is_arm and "aarch64" in img.display_name.lower():
                 image_id = img.id
+                add_log(f"Selected Latest Ubuntu ARM Image: {img.display_name}")
                 break
             elif not is_arm and "amd64" in img.display_name.lower():
                 image_id = img.id
+                add_log(f"Selected Latest Ubuntu AMD Image: {img.display_name}")
                 break
-        if not image_id and images: image_id = images[0].id
+        
+        if not image_id and images: 
+            image_id = images[0].id
+            add_log(f"Fallback to first available image: {images[0].display_name}")
 
-        add_log(f"✨ Target Assets Identified -> Subnet OCID: {subnet_id[:15]}... | Image OCID: {image_id[:15]}... | Data-Center: {ad_name}")
+        if not image_id:
+            add_log("❌ Error: No valid AVAILABLE Ubuntu images found in this region catalog.")
+            return
+
+        add_log(f"✨ Target Assets Identified -> Subnet: {subnet_id[:15]}... | Image: {image_id[:15]}... | Data-Center: {ad_name}")
 
         shape_config = None
         if is_arm:
@@ -91,7 +105,6 @@ def run_automated_creation(config, account_config, compute_client, network_clien
 def home():
     return render_template('index.html')
 
-# NEW: Independent storage metric analysis router
 @app.route('/api/check-storage', methods=['POST'])
 def check_storage():
     data = request.json
@@ -140,14 +153,18 @@ def auto_launch():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
-# NEW: Real-time web panel log drain ingestion path
+# 🔧 FIX: Serve logs dynamically based on the current client offset instead of clearing history completely
 @app.route('/api/logs', methods=['GET'])
 def fetch_live_logs():
-    global global_logs
+    offset = int(request.args.get('offset', 0))
     with logs_lock:
-        extracted_batch = list(global_logs)
-        global_logs.clear() # Clear out processed items to keep transmission payloads slim
-    return jsonify({"logs": extracted_batch})
+        # Return only items that have arrived after the client's known line index count
+        requested_batch = global_logs[offset:]
+        total_available = len(global_logs)
+    return jsonify({
+        "logs": requested_batch,
+        "next_offset": total_available
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
