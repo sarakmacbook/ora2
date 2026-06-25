@@ -7,26 +7,17 @@ import oci
 app = Flask(__name__)
 
 def run_automated_creation(config, account_config, compute_client, network_client, identity_client):
-    print(f"🕵️ Scanning assets inside region: {config['region']}...")
-    
     try:
-        # 1. Discover Availability Domain Name dynamically
         ads = identity_client.list_availability_domains(config["tenancy"]).data
         ad_name = ads[0].name if ads else ""
 
-        # 2. Automatically locate the Default Subnet ID inside your VCN
         vcns = network_client.list_vcns(compartment_id=config["tenancy"]).data
-        if not vcns:
-            print("❌ Failure: Could not locate a Virtual Cloud Network (VCN). Create one first.")
-            return
+        if not vcns: return
         
         subnets = network_client.list_subnets(compartment_id=config["tenancy"], vcn_id=vcns[0].id).data
-        if not subnets:
-            print("❌ Failure: No active subnets found in the target VCN.")
-            return
+        if not subnets: return
         subnet_id = subnets[0].id
 
-        # 3. Find latest Ubuntu image matched with the right system architecture type
         images = compute_client.list_images(compartment_id=config["tenancy"], operating_system="Ubuntu").data
         image_id = ""
         is_arm = account_config['shape'] == "VM.Standard.A1.Flex"
@@ -38,13 +29,8 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             elif not is_arm and "amd64" in img.display_name.lower():
                 image_id = img.id
                 break
-        
-        if not image_id and images:
-            image_id = images[0].id
+        if not image_id and images: image_id = images[0].id
 
-        print(f"✨ Auto-discovered Network Core -> Subnet: {subnet_id} | Image: {image_id} | Domain: {ad_name}")
-
-        # Assemble deployment object schema parameters
         shape_config = None
         if is_arm:
             shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
@@ -64,22 +50,21 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             display_name=account_config['display_name']
         )
 
-        # Run provisioning retry execution structure
         while True:
             try:
-                print(f"⏰ [{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching attempt for '{account_config['display_name']}'...")
-                response = compute_client.launch_instance(instance_details)
-                print(f"🎉 SUCCESS! Target instance created: {response.data.id}")
+                print(f"⏰ [{time.strftime('%Y-%m-%d %H:%M:%S')}] Attempting build structure instance...")
+                compute_client.launch_instance(instance_details)
+                print("🎉 SUCCESS! Free Tier Instance Provisioned successfully.")
                 break
             except oci.exceptions.ServiceError as e:
                 if "Out of capacity" in str(e) or e.status in [500, 429]:
-                    print(f"💤 Capacity busy in region '{config['region']}'. Retrying in 60s...")
+                    print(f"💤 Capacity busy for shape. Retrying in 60s...")
                 else:
-                    print(f"⚠️ OCI Api Notice: {e.message}")
+                    print(f"⚠️ OCI Return Status: {e.message}")
             time.sleep(60)
 
     except Exception as e:
-        print(f"❌ Background Process Pipeline Error: {str(e)}")
+        print(f"❌ Automation Engine Trace failure: {str(e)}")
 
 @app.route('/')
 def home():
@@ -101,8 +86,14 @@ def auto_launch():
         compute_client = oci.core.ComputeClient(config)
         network_client = oci.core.VirtualNetworkClient(config)
         identity_client = oci.identity.IdentityClient(config)
+        block_client = oci.core.BlockstorageClient(config)
         
-        # Deploy thread processing task asynchronously to clear user dashboard view context
+        # 📊 Core Feature: Loop existing allocations to calculate total storage size used
+        boot_volumes = block_client.list_boot_volumes(compartment_id=config["tenancy"]).data
+        total_used_storage = sum([int(vol.size_in_gbs) for vol in boot_volumes if vol.lifecycle_state != "TERMINATED"])
+        remaining_storage = max(0, 200 - total_used_storage)
+
+        # Trigger background loop deployment tasks
         thread = threading.Thread(
             target=run_automated_creation, 
             args=(config, data, compute_client, network_client, identity_client), 
@@ -110,7 +101,11 @@ def auto_launch():
         )
         thread.start()
         
-        return jsonify({"success": True, "message": "Credentials verified! Network auto-discovery and background launch loops activated successfully."})
+        return jsonify({
+            "success": True,
+            "storage_used_gb": total_used_storage,
+            "storage_remaining_gb": remaining_storage
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
