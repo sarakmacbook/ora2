@@ -4,6 +4,19 @@
     <meta charset="UTF-8">
     <title>OCI One-Click Auto Provisioner</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        .terminal-box {
+            background-color: #1e1e1e;
+            color: #39ff14;
+            font-family: 'Courier New', Courier, monospace;
+            height: 250px;
+            overflow-y: scroll;
+            font-size: 0.85rem;
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid #333;
+        }
+    </style>
     <script>
         function toggleShapeFields() {
             var shape = document.getElementById("shapeSelector").value;
@@ -11,23 +24,16 @@
             var ramInput = document.getElementById("memory");
 
             if (shape === "VM.Standard.E2.1.Micro") {
-                // Permanently force exact AMD free tier allotments
-                cpuInput.value = 1;
-                ramInput.value = 1;
-                cpuInput.disabled = true;
-                ramInput.disabled = true;
+                cpuInput.value = 1; ramInput.value = 1;
+                cpuInput.disabled = true; ramInput.disabled = true;
             } else {
-                // Restore default editable ARM values
-                cpuInput.value = 4;
-                ramInput.value = 24;
-                cpuInput.disabled = false;
-                ramInput.disabled = false;
+                cpuInput.value = 4; ramInput.value = 24;
+                cpuInput.disabled = false; ramInput.disabled = false;
             }
         }
 
         function parseRawConfig() {
             const rawText = document.getElementById("rawConfigInput").value;
-            
             const userMatch = rawText.match(/user\s*=\s*(ocid1\.user\.[^\s#\n]+)/);
             const tenancyMatch = rawText.match(/tenancy\s*=\s*(ocid1\.tenancy\.[^\s#\n]+)/);
             const fingerprintMatch = rawText.match(/fingerprint\s*=\s*([a-fA-F0-9:]{47})/);
@@ -42,7 +48,6 @@
         function handleKeyUpload(event) {
             const file = event.target.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = function(e) {
                 document.getElementById("private_key").value = e.target.result;
@@ -51,12 +56,49 @@
             reader.readAsText(file);
         }
 
+        // Dedicated independent storage analyzer action
+        async function checkStorageUsage() {
+            parseRawConfig();
+            const btn = document.getElementById("storageBtn");
+            const storageAlert = document.getElementById("storageAlert");
+            
+            btn.innerText = "⏳ Scanning OCI Volumes...";
+            btn.disabled = true;
+
+            const payload = {
+                user: document.getElementById("user").value,
+                tenancy: document.getElementById("tenancy").value,
+                fingerprint: document.getElementById("fingerprint").value,
+                region: document.getElementById("region").value,
+                private_key: document.getElementById("private_key").value
+            };
+
+            try {
+                const response = await fetch('/api/check-storage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    storageAlert.className = "alert alert-info d-block";
+                    storageAlert.innerHTML = `📊 <b>Current Live Storage Status:</b><br>• Used Volume space: <b>${result.storage_used_gb} GB</b><br>• Free Remaining space: <b>${result.storage_remaining_gb} GB</b> (Out of 200 GB Free Tier Limit)`;
+                } else {
+                    alert("❌ Storage check failed: " + result.error);
+                }
+            } catch (err) {
+                alert("❌ Request Error: " + err.message);
+            } finally {
+                btn.innerText = "📊 Check Free Tier Storage Status";
+                btn.disabled = false;
+            }
+        }
+
         async function startFullyAutomatedLoop() {
             parseRawConfig();
-            
             const btn = document.getElementById("actionBtn");
-            const storageAlert = document.getElementById("storageAlert");
-            btn.innerText = "⏳ Scanning Block Storage & Discovering Assets...";
+            btn.innerText = "⚡ Launching Provisioning Loop...";
             btn.disabled = true;
 
             const payload = {
@@ -80,11 +122,8 @@
                     body: JSON.stringify(payload)
                 });
                 const result = await response.json();
-                
                 if (result.success) {
-                    storageAlert.className = "alert alert-info mt-3 d-block";
-                    storageAlert.innerHTML = `📊 <b>Storage Utilization Scan:</b> Used: ${result.storage_used_gb} GB / 200 GB limit. Remaining: ${result.storage_remaining_gb} GB.`;
-                    alert("🎉 Background creation loops activated successfully!");
+                    alert("🚀 Continuous retry framework tracking launched successfully!");
                 } else {
                     alert("❌ Deployment failed: " + result.error);
                 }
@@ -95,13 +134,29 @@
                 btn.disabled = false;
             }
         }
+
+        // Live Log poller loop mechanism
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/logs');
+                const data = await res.json();
+                const logBox = document.getElementById("terminalLogs");
+                
+                if (data.logs && data.logs.length > 0) {
+                    data.logs.forEach(line => {
+                        logBox.innerHTML += `<div>${line}</div>`;
+                    });
+                    logBox.scrollTop = logBox.scrollHeight; // Auto-scroll down
+                }
+            } catch (e) { console.error("Log fetch error", e); }
+        }, 2000); // Poll every 2 seconds
     </script>
 </head>
 <body class="bg-light p-4">
     <div class="container" style="max-width: 650px;">
-        <div class="card shadow-lg border-0 rounded-4">
+        <div class="card shadow-lg border-0 rounded-4 mb-4">
             <div class="card-header bg-dark text-white p-3 rounded-top-4">
-                <h4 class="mb-0 text-center text-warning fw-bold">🎯 OCI Secure Smart-Drop Loop Tool</h4>
+                <h4 class="mb-0 text-center text-warning fw-bold">🎯 OCI Live-Track Provisioner Portal</h4>
             </div>
             <div class="card-body p-4">
                 
@@ -111,10 +166,13 @@
                         <label class="form-label text-white-50">Paste raw text configuration block:</label>
                         <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config text here..." oninput="parseRawConfig()"></textarea>
                     </div>
-                    <div class="mb-2">
+                    <div class="mb-3">
                         <label class="form-label text-white-50">Upload downloaded (.pem) Private Key file:</label>
                         <input type="file" class="form-control bg-secondary text-white border-0" accept=".pem" onchange="handleKeyUpload(event)">
                     </div>
+                    
+                    <button type="button" id="storageBtn" class="btn btn-outline-warning w-100 fw-bold btn-sm" onclick="checkStorageUsage()">📊 Check Free Tier Storage Status</button>
+                    <div id="storageAlert" class="alert alert-info mt-3 d-none" role="alert"></div>
                 </div>
 
                 <div class="bg-warning-subtle p-3 mb-4 rounded-3 border">
@@ -149,9 +207,13 @@
                 <input type="hidden" id="user"><input type="hidden" id="tenancy"><input type="hidden" id="fingerprint"><input type="hidden" id="region">
                 <textarea id="private_key" style="display:none;"></textarea><input type="hidden" id="ssh_key">
 
-                <button type="button" id="actionBtn" class="btn btn-primary w-100 btn-lg py-3 fw-bold rounded-3" onclick="startFullyAutomatedLoop()">🚀 Start Continuous Provisioning Loop</button>
+                <button type="button" id="actionBtn" class="btn btn-primary w-100 btn-lg py-3 fw-bold rounded-3 shadow mb-4" onclick="startFullyAutomatedLoop()">🚀 Start Continuous Provisioning Loop</button>
                 
-                <div id="storageAlert" class="alert alert-info mt-3 d-none" role="alert"></div>
+                <h5 class="text-secondary mb-2">🖥️ Live Output Activity Stream</h5>
+                <div id="terminalLogs" class="terminal-box">
+                    <div>[System] Log framework listening for active background instances...</div>
+                </div>
+
             </div>
         </div>
     </div>
