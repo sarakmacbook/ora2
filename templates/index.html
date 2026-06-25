@@ -18,6 +18,9 @@
         }
     </style>
     <script>
+        // Track global array offset count to prevent clearing upon browser navigation drops
+        let currentLogOffset = 0;
+
         function toggleShapeFields() {
             var shape = document.getElementById("shapeSelector").value;
             var cpuInput = document.getElementById("ocpus");
@@ -56,7 +59,6 @@
             reader.readAsText(file);
         }
 
-        // Dedicated independent storage analyzer action
         async function checkStorageUsage() {
             parseRawConfig();
             const btn = document.getElementById("storageBtn");
@@ -135,10 +137,10 @@
             }
         }
 
-        // Live Log poller loop mechanism
-        setInterval(async () => {
+        // 🔧 FIX: Poll using the incremental offset tracking value
+        async function fetchLogs() {
             try {
-                const res = await fetch('/api/logs');
+                const res = await fetch(`/api/logs?offset=${currentLogOffset}`);
                 const data = await res.json();
                 const logBox = document.getElementById("terminalLogs");
                 
@@ -146,10 +148,17 @@
                     data.logs.forEach(line => {
                         logBox.innerHTML += `<div>${line}</div>`;
                     });
-                    logBox.scrollTop = logBox.scrollHeight; // Auto-scroll down
+                    currentLogOffset = data.next_offset;
+                    logBox.scrollTop = logBox.scrollHeight;
                 }
             } catch (e) { console.error("Log fetch error", e); }
-        }, 2000); // Poll every 2 seconds
+        }
+
+        // Run checking tasks instantly on load to restore dashboard history context, then track every 2s
+        window.onload = () => {
+            fetchLogs();
+            setInterval(fetchLogs, 2000);
+        };
     </script>
 </head>
 <body class="bg-light p-4">
@@ -210,9 +219,7 @@
                 <button type="button" id="actionBtn" class="btn btn-primary w-100 btn-lg py-3 fw-bold rounded-3 shadow mb-4" onclick="startFullyAutomatedLoop()">🚀 Start Continuous Provisioning Loop</button>
                 
                 <h5 class="text-secondary mb-2">🖥️ Live Output Activity Stream</h5>
-                <div id="terminalLogs" class="terminal-box">
-                    <div>[System] Log framework listening for active background instances...</div>
-                </div>
+                <div id="terminalLogs" class="terminal-box"></div>
 
             </div>
         </div>
