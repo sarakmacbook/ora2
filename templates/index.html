@@ -5,10 +5,24 @@
     <title>OCI One-Click Auto Provisioner</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <script>
-        // Automatic SSH Public Key generator from Private Key using browser crypto subtle
-        async function extractOrPlaceholderSSH() {
-            // Placeholder fallback so loop initiates smoothly even without manual SSH generation libraries
-            document.getElementById("ssh_key").value = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC9 Generated-By-Automation-Panel sarak@oci-instance";
+        function toggleShapeFields() {
+            var shape = document.getElementById("shapeSelector").value;
+            var cpuInput = document.getElementById("ocpus");
+            var ramInput = document.getElementById("memory");
+
+            if (shape === "VM.Standard.E2.1.Micro") {
+                // Permanently force exact AMD free tier allotments
+                cpuInput.value = 1;
+                ramInput.value = 1;
+                cpuInput.disabled = true;
+                ramInput.disabled = true;
+            } else {
+                // Restore default editable ARM values
+                cpuInput.value = 4;
+                ramInput.value = 24;
+                cpuInput.disabled = false;
+                ramInput.disabled = false;
+            }
         }
 
         function parseRawConfig() {
@@ -25,7 +39,6 @@
             if (regionMatch) document.getElementById("region").value = regionMatch[1];
         }
 
-        // Handles loading local file via browser container FileReader safely
         function handleKeyUpload(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -33,7 +46,7 @@
             const reader = new FileReader();
             reader.onload = function(e) {
                 document.getElementById("private_key").value = e.target.result;
-                extractOrPlaceholderSSH();
+                document.getElementById("ssh_key").value = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC9 Generated-By-Automation sarak@oci";
             };
             reader.readAsText(file);
         }
@@ -42,7 +55,8 @@
             parseRawConfig();
             
             const btn = document.getElementById("actionBtn");
-            btn.innerText = "⚡ Discovering Assets & Running Loops...";
+            const storageAlert = document.getElementById("storageAlert");
+            btn.innerText = "⏳ Scanning Block Storage & Discovering Assets...";
             btn.disabled = true;
 
             const payload = {
@@ -60,7 +74,6 @@
             };
 
             try {
-                // Request automatic backend discovery & loop initialization in 1 execution pipeline
                 const response = await fetch('/api/auto-launch-loop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -69,7 +82,9 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    alert("🎉 Success! " + result.message);
+                    storageAlert.className = "alert alert-info mt-3 d-block";
+                    storageAlert.innerHTML = `📊 <b>Storage Utilization Scan:</b> Used: ${result.storage_used_gb} GB / 200 GB limit. Remaining: ${result.storage_remaining_gb} GB.`;
+                    alert("🎉 Background creation loops activated successfully!");
                 } else {
                     alert("❌ Deployment failed: " + result.error);
                 }
@@ -86,15 +101,15 @@
     <div class="container" style="max-width: 650px;">
         <div class="card shadow-lg border-0 rounded-4">
             <div class="card-header bg-dark text-white p-3 rounded-top-4">
-                <h4 class="mb-0 text-center text-warning fw-bold">🎯 OCI One-Click Instant Provisioner</h4>
+                <h4 class="mb-0 text-center text-warning fw-bold">🎯 OCI Secure Smart-Drop Loop Tool</h4>
             </div>
             <div class="card-body p-4">
                 
                 <div class="bg-dark p-3 rounded-3 mb-4 text-white">
                     <h5 class="text-warning">1. Drop Credentials & Config File</h5>
                     <div class="mb-3">
-                        <label class="form-label text-white-50">Paste [DEFAULT] text configuration block:</label>
-                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config line here..." oninput="parseRawConfig()"></textarea>
+                        <label class="form-label text-white-50">Paste raw text configuration block:</label>
+                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config text here..." oninput="parseRawConfig()"></textarea>
                     </div>
                     <div class="mb-2">
                         <label class="form-label text-white-50">Upload downloaded (.pem) Private Key file:</label>
@@ -103,42 +118,40 @@
                 </div>
 
                 <div class="bg-warning-subtle p-3 mb-4 rounded-3 border">
-                    <h5 class="text-dark">2. Resource Profile Customization</h5>
+                    <h5 class="text-dark">2. Custom Shape Allocations</h5>
                     <div class="row">
                         <div class="col-md-6 mb-2">
                             <label class="form-label">Instance Tier Profile</label>
-                            <select id="shapeSelector" class="form-select" required>
+                            <select id="shapeSelector" class="form-select" onchange="toggleShapeFields()" required>
                                 <option value="VM.Standard.A1.Flex">Ampere ARM Always Free (Flexible)</option>
                                 <option value="VM.Standard.E2.1.Micro">AMD Standard Micro Always Free</option>
                             </select>
                         </div>
                         <div class="col-md-6 mb-2">
-                            <label class="form-label">Custom Storage (GB Volume)</label>
+                            <label class="form-label">Boot Volume Allocated Size (GB)</label>
                             <input type="number" id="boot_volume_gb" class="form-control" value="50" min="47" max="200">
                         </div>
                         <div class="col-md-4 mb-2">
-                            <label class="form-label">VM Display Name</label>
+                            <label class="form-label">VM Name Tag</label>
                             <input type="text" id="display_name" class="form-control" value="AlwaysFree-Bot">
                         </div>
                         <div class="col-md-4 mb-2">
-                            <label class="form-label">OCPUs Allocation</label>
-                            <input type="number" id="ocpus" class="form-control" value="4" min="1" max="4">
+                            <label class="form-label">OCPUs</label>
+                            <input type="number" id="ocpus" class="form-control" value="4">
                         </div>
                         <div class="col-md-4 mb-2">
-                            <label class="form-label">RAM Memory (GB)</label>
-                            <input type="number" id="memory" class="form-control" value="24" min="1" max="24">
+                            <label class="form-label">RAM (GB)</label>
+                            <input type="number" id="memory" class="form-control" value="24">
                         </div>
                     </div>
                 </div>
 
-                <input type="hidden" id="user">
-                <input type="hidden" id="tenancy">
-                <input type="hidden" id="fingerprint">
-                <input type="hidden" id="region">
-                <textarea id="private_key" style="display:none;"></textarea>
-                <input type="hidden" id="ssh_key">
+                <input type="hidden" id="user"><input type="hidden" id="tenancy"><input type="hidden" id="fingerprint"><input type="hidden" id="region">
+                <textarea id="private_key" style="display:none;"></textarea><input type="hidden" id="ssh_key">
 
-                <button type="button" id="actionBtn" class="btn btn-primary w-100 btn-lg py-3 fw-bold shadow-sm rounded-3" onclick="startFullyAutomatedLoop()">🚀 Start Continuous Provisioning Loop</button>
+                <button type="button" id="actionBtn" class="btn btn-primary w-100 btn-lg py-3 fw-bold rounded-3" onclick="startFullyAutomatedLoop()">🚀 Start Continuous Provisioning Loop</button>
+                
+                <div id="storageAlert" class="alert alert-info mt-3 d-none" role="alert"></div>
             </div>
         </div>
     </div>
