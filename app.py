@@ -1,6 +1,7 @@
 import time
 import threading
 import os
+import tempfile
 from flask import Flask, render_template, request, jsonify
 import oci
 
@@ -8,6 +9,35 @@ app = Flask(__name__)
 
 global_logs = []
 logs_lock = threading.Lock()
+
+# ── Private key temp file cache ────────────────────────────────────
+_key_file_cache: dict[str, str] = {}
+
+
+def _write_key_to_temp(private_key_text: str) -> str:
+    """Write private key PEM to a temp file and return the path. Cached per key."""
+    key_hash = str(hash(private_key_text))
+    if key_hash not in _key_file_cache:
+        fd, path = tempfile.mkstemp(suffix=".pem", prefix="oci-key-")
+        with os.fdopen(fd, "w") as f:
+            f.write(private_key_text)
+        os.chmod(path, 0o600)
+        _key_file_cache[key_hash] = path
+    return _key_file_cache[key_hash]
+
+
+def _build_oci_config(data: dict) -> dict:
+    """Build OCI config dict with key_file path instead of key_content."""
+    private_key = data.get('private_key', '')
+    key_path = _write_key_to_temp(private_key) if private_key else ''
+    return {
+        "user": data.get('user'),
+        "fingerprint": data.get('fingerprint'),
+        "tenancy": data.get('tenancy'),
+        "region": data.get('region'),
+        "key_file": key_path,
+    }
+
 
 def add_log(message):
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -18,63 +48,55 @@ def add_log(message):
         if len(global_logs) > 200:
             global_logs.pop(0)
 
+
 @app.route('/')
 def home():
     return render_template('index.html')
 
-# 🔍 NEW: API to fetch all real-time available images matching the chosen architecture
+
+# List all real-time available images matching the chosen architecture
 @app.route('/api/list-images', methods=['POST'])
 def list_available_images():
     data = request.json
-    config = {
-        "user": data.get('user'), "fingerprint": data.get('fingerprint'),
-        "tenancy": data.get('tenancy'), "region": data.get('region'),
-        "key_content": data.get('private_key')
-    }
+    config = _build_oci_config(data)
     is_arm = data.get('shape') == "VM.Standard.A1.Flex"
-    
+
     try:
         oci.config.validate_config(config)
         compute_client = oci.core.ComputeClient(config)
-        
-        # Pull all system images in the root compartment
+
         all_images = compute_client.list_images(compartment_id=config["tenancy"]).data
         valid_options = []
-        
+
         for img in all_images:
             if img.lifecycle_state != "AVAILABLE" or not img.display_name:
                 continue
-                
+
             name_lower = img.display_name.lower()
-            
-            # Check architecture constraint
+
             if is_arm and "aarch64" in name_lower:
                 valid_options.append({"id": img.id, "name": img.display_name})
             elif not is_arm and ("amd64" in name_lower or "x86_64" in name_lower or ("ubuntu" in name_lower and "aarch64" not in name_lower)):
                 valid_options.append({"id": img.id, "name": img.display_name})
-                
-        # Sort so newest images appear at the top
+
         valid_options.reverse()
-        return jsonify({"success": True, "images": valid_options[:30]}) # return top 30 images
+        return jsonify({"success": True, "images": valid_options[:30]})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
+
 
 @app.route('/api/check-storage', methods=['POST'])
 def check_storage():
     data = request.json
-    config = {
-        "user": data.get('user'), "fingerprint": data.get('fingerprint'),
-        "tenancy": data.get('tenancy'), "region": data.get('region'),
-        "key_content": data.get('private_key')
-    }
+    config = _build_oci_config(data)
     try:
         oci.config.validate_config(config)
         block_client = oci.core.BlockstorageClient(config)
-        
+
         boot_volumes = block_client.list_boot_volumes(compartment_id=config["tenancy"]).data
         total_used_storage = sum([int(vol.size_in_gbs) for vol in boot_volumes if vol.lifecycle_state != "TERMINATED"])
         remaining_storage = max(0, 200 - total_used_storage)
-        
+
         return jsonify({
             "success": True,
             "storage_used_gb": total_used_storage,
@@ -82,6 +104,7 @@ def check_storage():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
+
 
 def run_automated_creation(config, account_config, compute_client, network_client, identity_client):
     add_log(f"🕵️ Initializing infrastructure scan inside: {config['region']}...")
@@ -93,14 +116,13 @@ def run_automated_creation(config, account_config, compute_client, network_clien
         if not vcns:
             add_log("❌ Error: Could not locate a valid active VCN network profile.")
             return
-        
+
         subnets = network_client.list_subnets(compartment_id=config["tenancy"], vcn_id=vcns[0].id).data
         if not subnets:
             add_log("❌ Error: No default network subnets mapped.")
             return
         subnet_id = subnets[0].id
 
-        # Use the specific user-selected OS Image ID from the web UI form
         selected_image_id = account_config.get('image_id')
         if not selected_image_id:
             add_log("❌ Error: No OS image selection target submitted.")
@@ -145,29 +167,27 @@ def run_automated_creation(config, account_config, compute_client, network_clien
     except Exception as e:
         add_log(f"❌ Automation Engine Failure context: {str(e)}")
 
+
 @app.route('/api/auto-launch-loop', methods=['POST'])
 def auto_launch():
     data = request.json
-    config = {
-        "user": data.get('user'), "fingerprint": data.get('fingerprint'),
-        "tenancy": data.get('tenancy'), "region": data.get('region'),
-        "key_content": data.get('private_key')
-    }
+    config = _build_oci_config(data)
     try:
         oci.config.validate_config(config)
         compute_client = oci.core.ComputeClient(config)
         network_client = oci.core.VirtualNetworkClient(config)
         identity_client = oci.identity.IdentityClient(config)
-        
+
         thread = threading.Thread(
-            target=run_automated_creation, 
-            args=(config, data, compute_client, network_client, identity_client), 
+            target=run_automated_creation,
+            args=(config, data, compute_client, network_client, identity_client),
             daemon=True
         )
         thread.start()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
+
 
 @app.route('/api/logs', methods=['GET'])
 def fetch_live_logs():
@@ -179,6 +199,7 @@ def fetch_live_logs():
         "logs": requested_batch,
         "next_offset": total_available
     })
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
